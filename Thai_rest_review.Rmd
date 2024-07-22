@@ -1,0 +1,301 @@
+---
+title: "Thai restaurant customer review (Melb)"
+output: html_document
+date: "2023-10-14"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+# load the require package
+library(tidyverse)
+library(naniar)
+library(lubridate)
+library(tidytext)
+library(tm)
+library(syuzhet)
+library(wordcloud)
+library(RColorBrewer)
+
+```
+
+
+```{r eval=TRUE, echo=TRUE}
+# load business detail data 
+trip_map <- read_csv('tripadvisor_business_data.csv', show_col_types = FALSE)
+# glimpse to see the metadata
+glimpse(trip_map)
+
+#select only needed columns
+#filter only column contain 'Thai' in column
+trim_trip <- subset(trip_map , select= c("BMQDV", "YECgr 2", "panSN")
+                    )%>% filter(grepl("Thai", `YECgr 2`))
+
+# select only 'panSN' or suburb column
+suburb_thai <- subset(trim_trip, select = c("panSN"))
+```
+
+
+
+```{r eval=TRUE, echo=TRUE}
+# load Melbourne detail data to Melb_sub
+Melb_sub <- read_csv('MelbourneSuburbs.csv', show_col_types = FALSE)
+
+# put the Melb_sub col names into serialized vector
+Melb_suburb <- c(colnames(Melb_sub))
+
+
+# filter out the restaurants that not in Melbourne
+# calculate the frequency and show in descending order
+Thai_rest_sub <- suburb_thai%>%
+  filter(panSN %in% Melb_suburb)%>%
+  group_by(panSN) %>%
+  summarise(count = n())%>%
+  rename('Suburb' = 'panSN')%>%
+  arrange(desc(count))
+
+```
+
+```{r eval=TRUE, echo=TRUE}
+# print out the summary result
+Thai_rest_sub
+```
+
+
+```{r, fig.width=8, fig.height=10}
+# plot graph
+hist_res <-Thai_rest_sub %>%
+  ggplot(aes(x = fct_reorder(Suburb, count), y = count)) +
+  geom_bar(stat = "identity", alpha = 0.5) +
+  coord_flip() +
+  labs(title = "Thai Restaurants in Suburb",
+       y = "count",
+       x = "suburb")
+hist_res
+
+```
+```{r}
+# save_plot
+ggsave("thai_sub.jpg", plot = hist_res, device = "jpeg")
+```
+
+## Sentimental Analysis part
+
+You can also embed plots, for example:
+
+```{r eval=TRUE, echo=TRUE}
+# load customer review data into Thai_1 and Thai_2
+Thai_1 <- read_csv("Tripadvisor_review_thai_part1.csv", show_col_types = FALSE)
+Thai_2 <- read_csv("Tripadvisor_review_thai_part2.csv", show_col_types = FALSE)
+```
+
+
+```{r eval=TRUE, echo=TRUE}
+# take a look at metadata
+glimpse(Thai_1)
+glimpse(Thai_2)
+
+# select only target columns
+Partial_1 <- subset(Thai_1, select=c(Title, ratingdate, partial_entry))
+Partial_2 <- subset(Thai_2, select=c(Title, ratingdate, partial_entry))
+```
+```{r eval=TRUE, echo=TRUE}
+
+# stack both variable into one dataset and drop N/A
+Thai_rest_review = bind_rows(Partial_1, Partial_2)%>%drop_na()
+
+# check missing value 
+miss_var_summary(Thai_rest_review)
+
+# extract ratingdate column for a year
+Thai_rest_review <- Thai_rest_review %>%
+  mutate(ratingdate = str_extract(ratingdate, "\\d+ \\w+ \\d+")) %>%
+  mutate(year = format(as.Date(ratingdate, format = "%d %B %Y"), "%Y"))
+
+```
+```{r eval=TRUE, echo=TRUE}
+
+# define remove_emojis function to capture emoji
+remove_emojis <- function(x) {
+  iconv(x, "latin1", "ASCII", sub = "")
+}
+
+# load stop_words dataset
+data("stop_words")
+
+
+# remove all stop words and emoji
+# convert text into lowercase
+df_cleaned <- Thai_rest_review  %>%
+  mutate(text_cleaned = str_split(partial_entry, pattern = " ")) %>%
+  mutate(text_cleaned = map(text_cleaned,
+                            ~ .x[!tolower(.x) %in% stop_words$word])) %>%
+  mutate(text_cleaned = map_chr(text_cleaned,
+                                ~ paste(.x, collapse = " "))) %>%
+  mutate(text_cleaned = map_chr(text_cleaned,
+                                remove_emojis))
+```
+
+
+```{r eval=TRUE, echo=TRUE}
+# store cleaned text as a text element
+text <- as.character(df_cleaned$text_cleaned)
+```
+
+
+```{r eval=TRUE, echo=TRUE}
+# perform sentimental analysis 
+emotion <- get_nrc_sentiment(text)
+```
+
+
+```{r eval=TRUE, echo=TRUE}
+# convert emotion into long form
+emo_long <- emotion %>%
+  mutate(id = row_number()) %>%
+  pivot_longer(cols = -id, names_to = "sentiment", values_to = "freq")
+
+# calculated for frequency in sentiment
+emo_long <- subset(emo_long, select = c('sentiment', 'freq'))%>%
+  group_by(sentiment) %>%
+    summarise_all(.funs = sum, na.rm = TRUE)
+```
+
+
+
+
+```{r  fig.width=8, fig.height=6}
+# plot graph
+sentiment_sum <- emo_long %>%
+  ggplot(aes(x = fct_reorder(sentiment, freq), y = freq, fill = sentiment)) +
+  geom_bar(stat = "identity", alpha = 0.5) +
+  labs(title = "Sentiment summary from customer review towards Thai restaurants",
+       subtitle = "Case from Melbourne",
+       y = "frequency",
+       x = "sentiment")
+sentiment_sum
+```
+
+
+```{r}
+# save plot into .jpeg
+ggsave("sentiment_1.jpg", plot = sentiment_sum, device = "jpeg")
+
+
+```
+
+
+```{r}
+# created new value as to find sentiment based on year
+year_sen <- cbind(emotion, Thai_rest_review$year)
+
+# calculate for frequency based on year
+year_sen <- year_sen %>%
+  group_by(Thai_rest_review$year) %>%
+    summarise_all(.funs = sum, na.rm = TRUE)
+year_sen <- na.omit(year_sen) # remove N/A value
+
+```
+
+
+```{r}
+# convert year_sen into long form
+df_long <- year_sen %>%
+  pivot_longer(cols = -`Thai_rest_review$year`, 
+               names_to = "emotion", 
+               values_to = "freq")%>%
+  arrange(emotion)
+
+
+```
+
+```{r, fig.width=8, fig.height=6}
+# plot graph
+sen_dist <- df_long %>%
+  ggplot(aes(y = freq, x= `Thai_rest_review$year`,
+             colour = emotion, 
+             group = emotion)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "Distribution of sentiment emotion based on year", 
+       x = "Year",
+       y = "Frequency")
+
+sen_dist 
+```
+
+```{r}
+# save plot into .jpeg
+ggsave("sentiment_2.jpg", plot = sen_dist, device = "jpeg")
+```
+
+
+
+
+
+```{r eval=TRUE, echo=TRUE}
+# assign review into text_df
+text_df <- tibble(review = df_cleaned$text_cleaned)
+
+# perform sentiment analysis to find positive and negative sentiment
+word_count <-  text_df %>% 
+  unnest_tokens(output = word, 
+                input = review)%>%
+  inner_join(get_sentiments("bing"))%>%
+  count(word, sentiment, sort =TRUE)
+```
+
+```{r eval=TRUE, echo=TRUE}
+
+
+# Create a word cloud from sentiment associated words
+ wordcloud(words = word_count$word, 
+          freq= word_count$n , 
+          min.freq = 10, 
+          random.order = FALSE, 
+          colors = brewer.pal(8, "Set2"), 
+          rot.per = 0.3)
+ 
+
+```
+
+
+
+```{r}
+# filter top repeated positive and negative words
+positive_count <- head(word_count %>%filter(sentiment == 'positive')%>%arrange(desc(n)),20)
+negative_count <- head(word_count %>%filter(sentiment == 'negative')%>%arrange(desc(n)),20)
+
+# combined both positive and negative
+senti_pn <- bind_rows(positive_count, negative_count)
+```
+
+
+```{r}
+# plot graph
+pn <- senti_pn %>%
+  ggplot(aes(x = fct_reorder(word, n), y = n, fill = sentiment)) +
+  geom_bar(stat = "identity", alpha = 0.5) +
+  coord_flip() +
+  labs(title = "Negative and Positive words count",
+       subtitle = "result from sentimental analysis",
+       y = "frequency",
+       x = "words")+
+  facet_wrap(~sentiment, scales = "free")
+
+pn
+```
+```{r}
+# save plot into .jpeg
+ggsave("sentiment_3.jpg", plot = pn, device = "jpeg")
+```
+
+
+
+
+
+
+
